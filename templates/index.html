@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+{% if user %}
+    <div class="card">
+        <h2 class="card-title">欢迎回来，{{ user.username }}！</h2>
+
+        <div class="user-info">
+            <div class="info-row">
+                <span class="info-label">用户名</span>
+                <span class="info-value">{{ user.username }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">密码</span>
+                <span class="info-value">••••••••</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">邮箱</span>
+                <span class="info-value">{{ user.email }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">手机</span>
+                <span class="info-value">{{ user.phone }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">角色</span>
+                <span class="info-value">{{ user.role }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">余额</span>
+                <span class="info-value">{{ user.balance }}</span>
+            </div>
+        </div>
+
+        <a href="/logout" class="btn btn-primary">退出登录</a>
+    </div>
+{% else %}
+    <div class="card welcome-card">
+        <h2 class="card-title">欢迎来到用户管理系统</h2>
+        <p class="welcome-text">请先登录</p>
+        <a href="/login" class="btn btn-primary">前往登录</a>
+    </div>
+{% endif %}
+{% endblock %}

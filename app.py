@@ -41,10 +41,13 @@ login_attempts: dict[str, list] = {}   # IP -> [失败时间戳列表]
 
 
 def _get_client_ip() -> str:
-    """获取客户端真实 IP（支持反向代理）"""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """获取客户端真实 IP（仅在有反向代理时信任 X-Forwarded-For）"""
+    # 仅当明确配置了可信代理时才取 X-Forwarded-For
+    trusted_proxy = os.environ.get("TRUSTED_PROXY", "").lower() in ("1", "true", "yes")
+    if trusted_proxy:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.remote_addr or "unknown"
 
 
@@ -78,13 +81,13 @@ def init_db():
             phone TEXT
         )
     """)
-    # 插入默认用户（使用明文密码存储，与原有 USERS 字典区分）
+    # 插入默认用户（使用哈希密码存储）
     default_users = [
-        ("admin", "admin123", "admin@example.com", "13800138000"),
-        ("alice", "alice2025", "alice@example.com", "13900139001"),
+        ("admin", generate_password_hash("admin123"), "admin@example.com", "13800138000"),
+        ("alice", generate_password_hash("alice2025"), "alice@example.com", "13900139001"),
     ]
     for u, p, e, ph in default_users:
-        c.execute(f"INSERT OR IGNORE INTO users (username, password, email, phone) VALUES ('{u}', '{p}', '{e}', '{ph}')")
+        c.execute("INSERT OR IGNORE INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)", (u, p, e, ph))
     conn.commit()
     conn.close()
     print("[DB] 数据库初始化完成")
@@ -102,7 +105,7 @@ def index():
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
         try:
-            c.execute(f"SELECT username, email, phone FROM users WHERE username = '{username}'")
+            c.execute("SELECT username, email, phone FROM users WHERE username = ?", (username,))
             row = c.fetchone()
             if row:
                 user = {"username": row[0], "email": row[1], "phone": row[2]}
@@ -142,17 +145,15 @@ def login():
             user = {k: v for k, v in USERS[username].items() if k != "password"}
             return render_template("index.html", user=user)
 
-        # 再查 SQLite 数据库（明文密码）
+        # 再查 SQLite 数据库（哈希密码比对）
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
-        db_query = f"SELECT username, password, email, phone FROM users WHERE username = '{username}'"
-        print(f"[SQL] 登录查询: {db_query}")
         try:
-            c.execute(db_query)
+            c.execute("SELECT username, password, email, phone FROM users WHERE username = ?", (username,))
             db_user = c.fetchone()
             conn.close()
 
-            if db_user and db_user[1] == password:  # 明文比对
+            if db_user and check_password_hash(db_user[1], password):  # 哈希比对
                 login_attempts.pop(client_ip, None)
                 session["username"] = username
                 user_info = {
@@ -183,20 +184,26 @@ def logout():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    """用户注册（使用 f-string 字符串拼接 SQL，存在 SQL 注入漏洞）"""
+    """用户注册（已修复：参数化查询 + 密码哈希存储）"""
     if request.method == "POST":
-        username = request.form.get("username", "")
+        username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        email = request.form.get("email", "")
-        phone = request.form.get("phone", "")
+        email = request.form.get("email", "").strip()
+        phone = request.form.get("phone", "").strip()
+
+        if not username or len(username) > 32:
+            return render_template("register.html", error="用户名长度不正确！")
+        if not password or len(password) > 64:
+            return render_template("register.html", error="密码长度不正确！")
 
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
-        # 漏洞：使用 f-string 拼接 SQL，未做任何过滤
-        query = f"INSERT INTO users (username, password, email, phone) VALUES ('{username}', '{password}', '{email}', '{phone}')"
-        print(f"[SQL] 注册查询: {query}")
+        # 已修复：使用参数化查询 + 密码哈希存储
+        password_hash = generate_password_hash(password)
+        query = "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)"
+        print(f"[SQL] 注册查询: {query} 参数: ({username}, {email}, {phone})")
         try:
-            c.execute(query)
+            c.execute(query, (username, password_hash, email, phone))
             conn.commit()
             session["register_success"] = "注册成功，请登录"
             return redirect("/login")
@@ -211,19 +218,23 @@ def register():
 
 @app.route("/search", methods=["GET"])
 def search():
-    """用户搜索（使用 f-string 字符串拼接 SQL，存在 SQL 注入漏洞）"""
+    """用户搜索（已修复：参数化查询 + 输入校验）"""
     keyword = request.args.get("keyword", "").strip()
     results = []
     sql = ""
 
     if keyword:
+        if len(keyword) > 64:
+            keyword = keyword[:64]
+
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
-        # 漏洞：使用 f-string 拼接 SQL，未做任何过滤
-        sql = f"SELECT id, username, email, phone FROM users WHERE username LIKE '%{keyword}%' OR email LIKE '%{keyword}%'"
-        print(f"[SQL] 搜索查询: {sql}")
+        # 已修复：使用参数化查询
+        sql = "SELECT id, username, email, phone FROM users WHERE username LIKE ? OR email LIKE ?"
+        like_param = f'%{keyword}%'
+        print(f"[SQL] 搜索查询: {sql} 参数: ({like_param})")
         try:
-            c.execute(sql)
+            c.execute(sql, (like_param, like_param))
             results = c.fetchall()
         except Exception as e:
             print(f"[SQL] 搜索错误: {e}")
@@ -238,7 +249,7 @@ def search():
     elif username:
         conn2 = sqlite3.connect("data/users.db")
         try:
-            row = conn2.execute(f"SELECT username, email, phone FROM users WHERE username = '{username}'").fetchone()
+            row = conn2.execute("SELECT username, email, phone FROM users WHERE username = ?", (username,)).fetchone()
             if row:
                 user = {"username": row[0], "email": row[1], "phone": row[2]}
         except Exception as e:

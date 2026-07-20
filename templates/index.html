@@ -33,6 +33,48 @@
 
         <a href="/logout" class="btn btn-primary">退出登录</a>
     </div>
+
+    <!-- 搜索功能 -->
+    <div class="card">
+        <h2 class="card-title">用户搜索</h2>
+        <form method="get" action="/search" class="form search-form">
+            <div class="search-row">
+                <input type="text" name="keyword" class="form-input search-input" placeholder="搜索用户名或邮箱..." value="{{ keyword or '' }}">
+                <button type="submit" class="btn btn-primary">搜索</button>
+            </div>
+        </form>
+
+        {% if search_results is not none %}
+            <div class="search-results">
+                <h3>搜索结果</h3>
+                {% if search_results %}
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>用户名</th>
+                                <th>邮箱</th>
+                                <th>手机号</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in search_results %}
+                            <tr>
+                                <td>{{ row[0] }}</td>
+                                <td>{{ row[1] }}</td>
+                                <td>{{ row[2] }}</td>
+                                <td>{{ row[3] }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <p class="result-count">共找到 {{ search_results|length }} 条结果</p>
+                {% else %}
+                    <p class="no-result">无搜索结果</p>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
 {% else %}
     <div class="card welcome-card">
         <h2 class="card-title">欢迎来到用户管理系统</h2>

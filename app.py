@@ -1,9 +1,12 @@
 import os
+import uuid
+import imghdr
 import sqlite3
 from datetime import datetime, timedelta
 
-from flask import Flask, render_template, request, redirect, session, flash
+from flask import Flask, render_template, request, redirect, session, flash, url_for, send_from_directory, abort
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
@@ -33,6 +36,23 @@ USERS = {
 # Session 安全配置
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# 上传文件大小限制
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+# 上传文件保存路径
+UPLOAD_FOLDER = os.path.join("static", "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# 允许上传的文件扩展名白名单
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "svg"}
+
+# 允许的 MIME 类型白名单
+ALLOWED_MIMETYPES = {"image/png", "image/jpeg", "image/gif", "image/bmp",
+                     "image/webp", "image/x-icon", "image/svg+xml"}
+
+# 单个用户最大上传限制（5个文件）
+MAX_FILES_PER_USER = 5
 
 # 登录失败次数限制
 LOGIN_MAX_ATTEMPTS = 5           # 最大尝试次数
@@ -258,6 +278,99 @@ def search():
             conn2.close()
 
     return render_template("index.html", user=user, search_results=results, keyword=keyword, search_sql=sql)
+
+
+def allowed_file(filename: str) -> bool:
+    """检查文件扩展名是否在白名单中"""
+    if "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_EXTENSIONS
+
+
+def validate_image_content(filepath: str) -> bool:
+    """使用 imghdr 验证文件是否为真实图片"""
+    img_type = imghdr.what(filepath)
+    if img_type is None:
+        # imghdr 不认识的可能是 svg（svg需要单独验证）
+        try:
+            with open(filepath, "rb") as f:
+                header = f.read(1024)
+            return b"<svg" in header.lower() or b"<?xml" in header.lower()
+        except Exception:
+            return False
+    return True
+
+
+def get_user_upload_count(username: str) -> int:
+    """获取指定用户已上传的文件数量"""
+    user_upload_dir = os.path.join(UPLOAD_FOLDER, username)
+    if not os.path.isdir(user_upload_dir):
+        return 0
+    return len(os.listdir(user_upload_dir))
+
+
+@app.route("/upload", methods=["GET", "POST"])
+def upload():
+    """用户头像上传（已修复：扩展名校验、MIME校验、路径穿越防护、UUID重命名、用户隔离）"""
+    if "username" not in session:
+        return redirect("/login")
+
+    username = session["username"]
+
+    if request.method == "POST":
+        # F-08 修复：限制同用户上传文件数量
+        if get_user_upload_count(username) >= MAX_FILES_PER_USER:
+            return render_template("upload.html", error=f"上传文件数已达上限（{MAX_FILES_PER_USER}个），请先删除旧文件再上传！")
+
+        file = request.files.get("file")
+        if not file or file.filename == "":
+            return render_template("upload.html", error="请选择要上传的文件！")
+
+        original_filename = file.filename
+
+        # F-02 修复：使用 werkzeug 的 secure_filename 防止路径遍历
+        safe_filename = secure_filename(original_filename)
+        if safe_filename != original_filename:
+            print(f"[UPLOAD] 文件名安全处理: {original_filename} -> {safe_filename}")
+
+        # F-01 修复：白名单校验文件扩展名
+        if not allowed_file(original_filename):
+            print(f"[UPLOAD] 拒绝上传（扩展名不合法）: {original_filename}")
+            return render_template("upload.html", error=f"仅支持上传图片文件（{', '.join(sorted(ALLOWED_EXTENSIONS))}）！")
+
+        # F-03 修复：验证 MIME 类型
+        mime_type = file.content_type
+        if mime_type not in ALLOWED_MIMETYPES and mime_type is not None:
+            print(f"[UPLOAD] 拒绝上传（MIME类型不合法）: {original_filename} ({mime_type})")
+            return render_template("upload.html", error="文件类型不正确，请上传图片文件！")
+
+        # F-05/F-06 修复：UUID重命名 + 用户隔离目录
+        ext = original_filename.rsplit(".", 1)[1].lower()
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
+        user_upload_dir = os.path.join(UPLOAD_FOLDER, username)
+        os.makedirs(user_upload_dir, exist_ok=True)
+        filepath = os.path.join(user_upload_dir, unique_filename)
+
+        # 保存文件
+        file.save(filepath)
+
+        # F-04 修复：验证文件内容是否为真实图片
+        if not validate_image_content(filepath):
+            os.remove(filepath)
+            print(f"[UPLOAD] 删除非图片文件: {filepath}")
+            return render_template("upload.html", error="上传的文件不是有效的图片文件！")
+
+        file_url = url_for("static", filename=f"uploads/{username}/{unique_filename}")
+        print(f"[UPLOAD] 文件上传成功: {filepath} -> {file_url}")
+
+        return render_template("upload.html",
+                               success=True,
+                               file_url=file_url,
+                               filename=unique_filename,
+                               original_filename=original_filename)
+
+    return render_template("upload.html")
 
 
 if __name__ == "__main__":

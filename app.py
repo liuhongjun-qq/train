@@ -98,16 +98,17 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             email TEXT,
-            phone TEXT
+            phone TEXT,
+            balance REAL DEFAULT 0
         )
     """)
     # 插入默认用户（使用哈希密码存储）
     default_users = [
-        ("admin", generate_password_hash("admin123"), "admin@example.com", "13800138000"),
-        ("alice", generate_password_hash("alice2025"), "alice@example.com", "13900139001"),
+        ("admin", generate_password_hash("admin123"), "admin@example.com", "13800138000", 99999),
+        ("alice", generate_password_hash("alice2025"), "alice@example.com", "13900139001", 100),
     ]
-    for u, p, e, ph in default_users:
-        c.execute("INSERT OR IGNORE INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)", (u, p, e, ph))
+    for u, p, e, ph, b in default_users:
+        c.execute("INSERT OR IGNORE INTO users (username, password, email, phone, balance) VALUES (?, ?, ?, ?, ?)", (u, p, e, ph, b))
     conn.commit()
     conn.close()
     print("[DB] 数据库初始化完成")
@@ -220,10 +221,10 @@ def register():
         c = conn.cursor()
         # 已修复：使用参数化查询 + 密码哈希存储
         password_hash = generate_password_hash(password)
-        query = "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)"
+        query = "INSERT INTO users (username, password, email, phone, balance) VALUES (?, ?, ?, ?, ?)"
         print(f"[SQL] 注册查询: {query} 参数: ({username}, {email}, {phone})")
         try:
-            c.execute(query, (username, password_hash, email, phone))
+            c.execute(query, (username, password_hash, email, phone, 0))
             conn.commit()
             session["register_success"] = "注册成功，请登录"
             return redirect("/login")
@@ -371,6 +372,94 @@ def upload():
                                original_filename=original_filename)
 
     return render_template("upload.html")
+
+
+@app.route("/profile", methods=["GET"])
+def profile():
+    """个人中心（已修复：从session获取用户，不再接受URL参数指定他人）"""
+    if "username" not in session:
+        return redirect("/login")
+
+    username = session["username"]
+    error_msg = request.args.get("error", "")
+
+    conn = sqlite3.connect("data/users.db")
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, username, email, phone, balance FROM users WHERE username = ?", (username,))
+        row = c.fetchone()
+        if row:
+            user_data = {
+                "id": row[0],
+                "username": row[1],
+                "email": row[2],
+                "phone": row[3],
+                "balance": row[4]
+            }
+        else:
+            # 如果 SQLite 没有此用户，从 USERS 字典查
+            if username in USERS:
+                user_data = {
+                    "id": 0,
+                    "username": USERS[username]["username"],
+                    "email": USERS[username]["email"],
+                    "phone": USERS[username]["phone"],
+                    "balance": USERS[username].get("balance", 0)
+                }
+            else:
+                return render_template("profile.html", error="未找到用户信息！")
+    except Exception as e:
+        print(f"[SQL] 个人中心查询错误: {e}")
+        return render_template("profile.html", error=f"查询出错：{e}")
+    finally:
+        conn.close()
+
+    return render_template("profile.html", user=user_data, error=error_msg)
+
+
+@app.route("/recharge", methods=["POST"])
+def recharge():
+    """充值功能（已修复：校验用户身份 + 金额正负）"""
+    if "username" not in session:
+        return redirect("/login")
+
+    username = session["username"]
+    amount = request.form.get("amount", "0").strip()
+
+    # A-04 修复：校验 amount 必须为正数
+    try:
+        amount = float(amount)
+    except ValueError:
+        return redirect("/profile?error=金额格式不正确！")
+
+    if amount <= 0:
+        return redirect("/profile?error=充值金额必须大于零！")
+
+    # A-03 修复：根据 session 中的 username 确定 user_id，不接受外部传入
+    conn = sqlite3.connect("data/users.db")
+    c = conn.cursor()
+    try:
+        # 先查当前用户的 id
+        c.execute("SELECT id FROM users WHERE username = ?", (username,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            # USERS 字典中的用户不支持充值
+            flash("该账户不支持充值功能")
+            return redirect("/profile")
+
+        user_id = row[0]
+        # 已修复：参数化查询 + 金额正负校验
+        c.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user_id))
+        conn.commit()
+        print(f"[RECHARGE] 用户 {username}(ID={user_id}) 充值 {amount} 成功")
+    except Exception as e:
+        print(f"[RECHARGE] 充值错误: {e}")
+        flash(f"充值失败：{e}")
+    finally:
+        conn.close()
+
+    return redirect("/profile")
 
 
 if __name__ == "__main__":

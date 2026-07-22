@@ -54,10 +54,17 @@ ALLOWED_MIMETYPES = {"image/png", "image/jpeg", "image/gif", "image/bmp",
 # 单个用户最大上传限制（5个文件）
 MAX_FILES_PER_USER = 5
 
+# 注册频率限制（同一IP每小时最多注册3个账号）
+REGISTER_MAX_PER_HOUR = 3
+
+# 充值金额上限
+MAX_RECHARGE_AMOUNT = 10000
+
 # 登录失败次数限制
 LOGIN_MAX_ATTEMPTS = 5           # 最大尝试次数
 LOGIN_LOCKOUT_MINUTES = 5        # 锁定时间（分钟）
 login_attempts: dict[str, list] = {}   # IP -> [失败时间戳列表]
+register_records: dict[str, list] = {}  # IP -> [注册时间戳列表]  B-01修复
 
 
 def _get_client_ip() -> str:
@@ -85,6 +92,22 @@ def _record_failed_attempt(ip: str) -> None:
     if ip not in login_attempts:
         login_attempts[ip] = []
     login_attempts[ip].append(datetime.now())
+
+
+def _can_register(ip: str) -> bool:
+    """B-01 修复：检查IP是否超过注册频率限制（每小时最多3个）"""
+    now = datetime.now()
+    records = register_records.get(ip, [])
+    # 清理超过1小时的记录
+    register_records[ip] = [t for t in records if t > now - timedelta(hours=1)]
+    return len(register_records[ip]) < REGISTER_MAX_PER_HOUR
+
+
+def _record_registration(ip: str) -> None:
+    """记录一次注册"""
+    if ip not in register_records:
+        register_records[ip] = []
+    register_records[ip].append(datetime.now())
 
 
 def init_db():
@@ -205,8 +228,13 @@ def logout():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    """用户注册（已修复：参数化查询 + 密码哈希存储）"""
+    """用户注册（已修复：参数化查询 + 密码哈希存储 + 注册频率限制）"""
     if request.method == "POST":
+        # B-01 修复：注册频率限制
+        client_ip = _get_client_ip()
+        if not _can_register(client_ip):
+            return render_template("register.html", error=f"注册过于频繁，请稍后再试！（每小时最多{REGISTER_MAX_PER_HOUR}个账号）")
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip()
@@ -214,18 +242,20 @@ def register():
 
         if not username or len(username) > 32:
             return render_template("register.html", error="用户名长度不正确！")
-        if not password or len(password) > 64:
+        if not password or len(password) < 6:
+            return render_template("register.html", error="密码长度不能少于6位！")
+        if len(password) > 64:
             return render_template("register.html", error="密码长度不正确！")
 
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
-        # 已修复：使用参数化查询 + 密码哈希存储
         password_hash = generate_password_hash(password)
         query = "INSERT INTO users (username, password, email, phone, balance) VALUES (?, ?, ?, ?, ?)"
         print(f"[SQL] 注册查询: {query} 参数: ({username}, {email}, {phone})")
         try:
             c.execute(query, (username, password_hash, email, phone, 0))
             conn.commit()
+            _record_registration(client_ip)
             session["register_success"] = "注册成功，请登录"
             return redirect("/login")
         except Exception as e:
@@ -239,46 +269,37 @@ def register():
 
 @app.route("/search", methods=["GET"])
 def search():
-    """用户搜索（已修复：参数化查询 + 输入校验）"""
+    """用户搜索（已修复：仅搜索用户名，不泄露邮箱手机）"""
     keyword = request.args.get("keyword", "").strip()
     results = []
     sql = ""
 
     if keyword:
+        if len(keyword) < 2:
+            flash("搜索关键词至少2个字符")
+            return render_template("index.html", user=get_current_user(), search_results=None, keyword=keyword, search_sql="")
+
         if len(keyword) > 64:
             keyword = keyword[:64]
 
         conn = sqlite3.connect("data/users.db")
         c = conn.cursor()
-        # 已修复：使用参数化查询
-        sql = "SELECT id, username, email, phone FROM users WHERE username LIKE ? OR email LIKE ?"
+        # B-02 修复：仅返回用户名，不返回邮箱和手机号
+        sql = "SELECT username FROM users WHERE username LIKE ?"
         like_param = f'%{keyword}%'
         print(f"[SQL] 搜索查询: {sql} 参数: ({like_param})")
         try:
-            c.execute(sql, (like_param, like_param))
-            results = c.fetchall()
+            c.execute(sql, (like_param,))
+            raw = c.fetchall()
+            # 最多返回10条结果
+            results = [row[0] for row in raw[:10]]
         except Exception as e:
             print(f"[SQL] 搜索错误: {e}")
             flash(f"搜索出错：{e}")
         finally:
             conn.close()
 
-    username = session.get("username")
-    user = None
-    if username and username in USERS:
-        user = {k: v for k, v in USERS[username].items() if k != "password"}
-    elif username:
-        conn2 = sqlite3.connect("data/users.db")
-        try:
-            row = conn2.execute("SELECT username, email, phone FROM users WHERE username = ?", (username,)).fetchone()
-            if row:
-                user = {"username": row[0], "email": row[1], "phone": row[2]}
-        except Exception as e:
-            print(f"[SQL] 搜索页用户查询错误: {e}")
-        finally:
-            conn2.close()
-
-    return render_template("index.html", user=user, search_results=results, keyword=keyword, search_sql=sql)
+    return render_template("index.html", user=get_current_user(), search_results=results, keyword=keyword, search_sql=sql)
 
 
 def allowed_file(filename: str) -> bool:
@@ -374,6 +395,25 @@ def upload():
     return render_template("upload.html")
 
 
+def get_current_user():
+    """获取当前登录用户的信息"""
+    username = session.get("username")
+    if not username:
+        return None
+    if username in USERS:
+        return {k: v for k, v in USERS[username].items() if k != "password"}
+    conn = sqlite3.connect("data/users.db")
+    try:
+        row = conn.execute("SELECT username, email, phone FROM users WHERE username = ?", (username,)).fetchone()
+        if row:
+            return {"username": row[0], "email": row[1], "phone": row[2]}
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
+
+
 @app.route("/profile", methods=["GET"])
 def profile():
     """个人中心（已修复：从session获取用户，不再接受URL参数指定他人）"""
@@ -434,6 +474,10 @@ def recharge():
 
     if amount <= 0:
         return redirect("/profile?error=充值金额必须大于零！")
+
+    # B-03 修复：充值金额上限校验
+    if amount > MAX_RECHARGE_AMOUNT:
+        return redirect(f"/profile?error=单次充值金额不能超过{MAX_RECHARGE_AMOUNT}元！")
 
     # A-03 修复：根据 session 中的 username 确定 user_id，不接受外部传入
     conn = sqlite3.connect("data/users.db")

@@ -50,26 +50,11 @@
             <div class="search-results">
                 <h3>搜索结果</h3>
                 {% if search_results %}
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>用户名</th>
-                                <th>邮箱</th>
-                                <th>手机号</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for row in search_results %}
-                            <tr>
-                                <td>{{ row[0] }}</td>
-                                <td>{{ row[1] }}</td>
-                                <td>{{ row[2] }}</td>
-                                <td>{{ row[3] }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                    <div class="search-user-list">
+                        {% for username in search_results %}
+                        <div class="search-user-item">{{ username }}</div>
+                        {% endfor %}
+                    </div>
                     <p class="result-count">共找到 {{ search_results|length }} 条结果</p>
                 {% else %}
                     <p class="no-result">无搜索结果</p>

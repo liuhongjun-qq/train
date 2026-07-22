@@ -10,8 +10,8 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# 使用环境变量或随机密钥（不再硬编码弱密钥）
-app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
+# 使用固定密钥（确保重启后 session 仍然有效）
+app.secret_key = os.environ.get("SECRET_KEY", "class01-fixed-secret-key-2026")
 
 # 密码以哈希形式存储，不再存明文
 USERS = {

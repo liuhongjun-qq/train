@@ -373,3 +373,44 @@ body {
     margin-top: 20px;
     text-align: center;
 }
+
+/* Page Content */
+.page-content-body {
+    font-size: 14px;
+    line-height: 1.8;
+    color: #333;
+}
+
+.page-content-body h2 {
+    font-size: 18px;
+    margin: 16px 0 8px;
+    color: #333;
+}
+
+.page-content-body h3 {
+    font-size: 15px;
+    margin: 12px 0 6px;
+    color: #555;
+}
+
+.page-content-body p {
+    margin-bottom: 8px;
+}
+
+.page-content-body a {
+    color: #667eea;
+    text-decoration: none;
+}
+
+.page-content-body a:hover {
+    text-decoration: underline;
+}
+
+.help-section {
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.help-section:last-child {
+    border-bottom: none;
+}

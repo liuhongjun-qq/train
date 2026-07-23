@@ -506,6 +506,32 @@ def recharge():
     return redirect("/profile")
 
 
+@app.route("/page", methods=["GET"])
+def page():
+    """动态页面加载（已修复：路径规范化校验 + 仅限 pages/ 目录 + 仅限 .html 文件）"""
+    name = request.args.get("name", "").strip()
+    page_content = ""
+    page_title = ""
+
+    if name:
+        # 已修复：禁止路径穿越字符
+        if ".." in name or "/" in name or "\\" in name:
+            page_content = "页面不存在"
+        else:
+            filepath = os.path.join("pages", name + ".html")
+            if os.path.exists(filepath) and os.path.isfile(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        page_content = f.read()
+                    page_title = name
+                except Exception as e:
+                    page_content = f"读取文件失败：{e}"
+            else:
+                page_content = "页面不存在"
+
+    return render_template("index.html", page_content=page_content, page_title=page_title, user=get_current_user(), search_results=None)
+
+
 if __name__ == "__main__":
     init_db()
     debug_mode = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")

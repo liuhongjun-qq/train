@@ -1,6 +1,7 @@
 import os
 import uuid
 import imghdr
+import secrets
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -65,6 +66,33 @@ LOGIN_MAX_ATTEMPTS = 5           # 最大尝试次数
 LOGIN_LOCKOUT_MINUTES = 5        # 锁定时间（分钟）
 login_attempts: dict[str, list] = {}   # IP -> [失败时间戳列表]
 register_records: dict[str, list] = {}  # IP -> [注册时间戳列表]  B-01修复
+
+
+def _generate_csrf_token() -> str:
+    """生成 CSRF Token 并存入 session"""
+    if "_csrf_token" not in session:
+        session["_csrf_token"] = secrets.token_hex(32)
+    return session["_csrf_token"]
+
+
+def _validate_csrf_token() -> bool:
+    """验证 CSRF Token"""
+    token = request.form.get("_csrf_token", "")
+    stored = session.get("_csrf_token", "")
+    return secrets.compare_digest(token, stored)
+
+
+def _check_referer() -> bool:
+    """验证 Referer 来源（辅助防御）"""
+    referer = request.headers.get("Referer", "")
+    host = request.host
+    return host in referer
+
+
+# 全局上下文注入：所有模板自动获取 csrf_token
+@app.context_processor
+def inject_csrf_token():
+    return dict(csrf_token=_generate_csrf_token())
 
 
 def _get_client_ip() -> str:
@@ -230,6 +258,10 @@ def logout():
 def register():
     """用户注册（已修复：参数化查询 + 密码哈希存储 + 注册频率限制）"""
     if request.method == "POST":
+        # CSRF 修复：验证 CSRF Token
+        if not _validate_csrf_token():
+            return render_template("register.html", error="安全验证失败，请刷新页面后重试！")
+
         # B-01 修复：注册频率限制
         client_ip = _get_client_ip()
         if not _can_register(client_ip):
@@ -341,6 +373,10 @@ def upload():
     username = session["username"]
 
     if request.method == "POST":
+        # CSRF 修复：验证 CSRF Token
+        if not _validate_csrf_token():
+            return render_template("upload.html", error="安全验证失败，请刷新页面后重试！")
+
         # F-08 修复：限制同用户上传文件数量
         if get_user_upload_count(username) >= MAX_FILES_PER_USER:
             return render_template("upload.html", error=f"上传文件数已达上限（{MAX_FILES_PER_USER}个），请先删除旧文件再上传！")
@@ -466,6 +502,14 @@ def recharge():
     username = session["username"]
     amount = request.form.get("amount", "0").strip()
 
+    # CSRF 修复：验证 CSRF Token + Referer
+    if not _validate_csrf_token():
+        flash("安全验证失败，请刷新页面后重试！")
+        return redirect("/profile")
+    if not _check_referer():
+        flash("请求来源不合法！")
+        return redirect("/profile")
+
     # A-04 修复：校验 amount 必须为正数
     try:
         amount = float(amount)
@@ -530,6 +574,62 @@ def page():
                 page_content = "页面不存在"
 
     return render_template("index.html", page_content=page_content, page_title=page_title, user=get_current_user(), search_results=None)
+
+
+@app.route("/change-password", methods=["POST"])
+def change_password():
+    """修改密码（漏洞：不验证原密码、不验证CSRF、不验证用户身份一致性）"""
+    if "username" not in session:
+        return redirect("/login")
+
+    username = request.form.get("username", "").strip()
+    new_password = request.form.get("new_password", "")
+
+    if not username or not new_password:
+        flash("用户名和新密码不能为空！")
+        return redirect("/profile")
+
+    # CSRF 修复：验证 CSRF Token + Referer
+    if not _validate_csrf_token():
+        flash("安全验证失败，请刷新页面后重试！")
+        print(f"[CSRF] 修改密码CSRF校验失败: session={session.get('_csrf_token','')[:16]} form={request.form.get('_csrf_token','')[:16]}")
+        return redirect("/profile")
+
+    if not _check_referer():
+        flash("请求来源不合法！")
+        print(f"[CSRF] 修改密码Referer校验失败: {request.headers.get('Referer','')}")
+        return redirect("/profile")
+
+    # 漏洞：不验证 session 用户和提交的 username 是否一致
+    # 漏洞：不验证原密码
+    # 漏洞：无 CSRF Token
+
+    # 先尝试更新 USERS 字典
+    if username in USERS:
+        USERS[username]["password"] = generate_password_hash(new_password)
+        print(f"[CHANGE-PW] USERS字典用户 {username} 密码已修改", flush=True)
+        flash(f"用户 {username} 密码修改成功！")
+        return redirect("/profile")
+
+    # 再尝试更新 SQLite 数据库
+    conn = sqlite3.connect("data/users.db")
+    c = conn.cursor()
+    try:
+        password_hash = generate_password_hash(new_password)
+        c.execute("UPDATE users SET password = ? WHERE username = ?", (password_hash, username))
+        conn.commit()
+        if c.rowcount > 0:
+            print(f"[CHANGE-PW] SQLite用户 {username} 密码已修改")
+            flash(f"用户 {username} 密码修改成功！")
+        else:
+            flash(f"未找到用户 {username}！")
+    except Exception as e:
+        print(f"[CHANGE-PW] 修改密码错误: {e}")
+        flash(f"修改密码失败：{e}")
+    finally:
+        conn.close()
+
+    return redirect("/profile")
 
 
 if __name__ == "__main__":
